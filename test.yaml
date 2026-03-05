@@ -4,8 +4,8 @@ pynq_user: "xilinx"
 pynq_path: "/home/xilinx/jupyter_notebooks/cubesat"
 detector: [0, 1]
 type: "time"
-time_s: 0.1
-n_events: 1024
+time_s: 1
+n_events: 100000
 pixel_dis_csv: "pixel_disable.csv"
 clock: 10
 threshold_keV: 30

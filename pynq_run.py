@@ -113,16 +113,54 @@ def load_pixel_disable(pixel_dis_csv):
     return det0, det1
 
 
-def write_output_txt(filepath, cfg, prefix, test_stdout, det0_dis, det1_dis):
-    """Write output.txt with reproducible YAML header + metadata + pixel disable."""
+def parse_reply_commands(test_stdout):
+    """Extract reply command values from test.py stdout.
+    Returns dict: {command_name: (czt0_val, czt1_val)}"""
+    results = {}
+    in_table = False
+    for line in test_stdout.split("\n"):
+        line_s = line.strip()
+        if line_s.startswith("Command") and "CZT" in line_s:
+            in_table = True
+            continue
+        if in_table:
+            if line_s == "" or line_s.startswith("Reply commands done"):
+                break
+            # Lines look like: READ_SERIAL_LSB..........  12345  67890
+            parts = line_s.replace(".", " ").split()
+            if len(parts) >= 3:
+                cmd = parts[0]
+                try:
+                    v0 = int(parts[-2])
+                    v1 = int(parts[-1])
+                    results[cmd] = (v0, v1)
+                except ValueError:
+                    pass
+    return results
+
+
+def write_output_txt(filepath, cfg, run_dt, test_stdout, det0_dis, det1_dis, det0_id, det1_id):
+    """Write output.txt with reproducible YAML header + metadata + pixel disable CSV."""
+    reply = parse_reply_commands(test_stdout)
+
+    # Temperature: raw register value (encoding TBD)
+    temp0, temp1 = None, None
+    if "READ_TEMPERATURE" in reply:
+        temp0 = reply["READ_TEMPERATURE"][0]
+        temp1 = reply["READ_TEMPERATURE"][1]
+
+    # Actual threshold: value/1023 * 200 keV
+    thresh0, thresh1 = None, None
+    if "GET_THRESHOLD" in reply:
+        thresh0 = reply["GET_THRESHOLD"][0] / 1023.0 * 200.0
+        thresh1 = reply["GET_THRESHOLD"][1] / 1023.0 * 200.0
+
     with open(filepath, "w") as f:
         # --- Reproducible YAML (first K lines) ---
         f.write("---\n")
-        # Connection
         f.write(f'pynq_ip: "{cfg["pynq_ip"]}"\n')
         f.write(f'pynq_user: "{cfg["pynq_user"]}"\n')
         f.write(f'pynq_path: "{cfg["pynq_path"]}"\n')
-        # Science params
         f.write(f'detector: {cfg["detector"]}\n')
         f.write(f'type: "{cfg["type"]}"\n')
         if cfg["type"] == "time":
@@ -134,34 +172,24 @@ def write_output_txt(filepath, cfg, prefix, test_stdout, det0_dis, det1_dis):
         f.write(f'threshold_keV: {cfg["threshold_keV"]}\n')
         f.write("\n")
 
-        # --- Metadata: reply commands from test.py stdout ---
-        f.write("# --- Reply Commands (from test.py) ---\n")
-        # Try to extract the reply commands table from stdout
-        in_table = False
-        for line in test_stdout.split("\n"):
-            line_s = line.strip()
-            if line_s.startswith("Command") and "CZT" in line_s:
-                in_table = True
-                f.write(f"# {line_s}\n")
-                continue
-            if in_table:
-                if line_s == "" or line_s.startswith("Reply commands done"):
-                    break
-                f.write(f"# {line_s}\n")
+        # --- Metadata ---
+        f.write(f"# Date: {run_dt.strftime('%B %d, %Y at %I:%M:%S %p')}\n")
+        f.write(f"# Det 0 ID: {det0_id}\n")
+        f.write(f"# Det 1 ID: {det1_id}\n")
+        if temp0 is not None:
+            f.write(f"# Temperature (raw): Det 0 = {temp0}, Det 1 = {temp1}\n")
+        if thresh0 is not None:
+            f.write(f"# Threshold: Det 0 = {thresh0:.2f} keV, Det 1 = {thresh1:.2f} keV\n")
         f.write("\n")
 
-        # --- Run info ---
-        f.write(f"# Run prefix: {prefix}\n")
-        f.write(f"# Timestamp: {datetime.now().isoformat()}\n")
-        f.write("\n")
-
-        # --- Pixel disable (last 2 lines, copy-pastable into CSV) ---
-        f.write("# --- Pixel Disable (last 2 lines = det0, det1; copy into CSV) ---\n")
+        # --- Pixel Disable CSV ---
+        f.write("# --- pixel_disable.csv ---\n")
         f.write(",".join(str(v) for v in det0_dis) + "\n")
         f.write(",".join(str(v) for v in det1_dis) + "\n")
 
 
-def plot_results(csv_path, prefix):
+def plot_results(csv_path, prefix, det_id_map):
+    """det_id_map: {0: "12345", 1: "67890"} mapping det index to serial ID."""
     save_dir = os.path.dirname(csv_path)
     print(f"Plotting from {os.path.basename(csv_path)}...")
 
@@ -173,6 +201,9 @@ def plot_results(csv_path, prefix):
 
     unique_dets = sorted(df["det_id"].unique())
 
+    def det_label(det):
+        return f"Det {det_id_map.get(det, det)}"
+
     # DPH per detector
     for det in unique_dets:
         mask = det_ids == det
@@ -183,19 +214,9 @@ def plot_results(csv_path, prefix):
         fig, ax = plt.subplots(figsize=(12, 10))
         sns.heatmap(pixhist.reshape((16, 16)), cmap="icefire",
                     linewidths=1, annot=True, fmt=".0f", ax=ax)
-        ax.set_title(f"Detector Plane Histogram - Det {det}")
-        path = os.path.join(save_dir, f"{prefix}_dph_det{det}.png")
-        fig.savefig(path, dpi=150, bbox_inches="tight")
-        print(f"  Saved {os.path.basename(path)}")
-
-    # Combined DPH if both detectors present
-    if len(unique_dets) > 1:
-        pixhist_all = np.bincount(pixels, minlength=256)[:256]
-        fig, ax = plt.subplots(figsize=(12, 10))
-        sns.heatmap(pixhist_all.reshape((16, 16)), cmap="icefire",
-                    linewidths=1, annot=True, fmt=".0f", ax=ax)
-        ax.set_title("Detector Plane Histogram - Combined")
-        path = os.path.join(save_dir, f"{prefix}_dph_combined.png")
+        ax.set_title(f"Detector Plane Histogram - {det_label(det)}")
+        did = det_id_map.get(det, det)
+        path = os.path.join(save_dir, f"{prefix}_dph_det{det}_id{did}.png")
         fig.savefig(path, dpi=150, bbox_inches="tight")
         print(f"  Saved {os.path.basename(path)}")
 
@@ -203,7 +224,7 @@ def plot_results(csv_path, prefix):
     fig, ax = plt.subplots(figsize=(14, 7))
     for det in unique_dets:
         mask = det_ids == det
-        ax.hist(energy[mask], bins=range(0, 4096, 10), histtype="step", label=f"Det {det}")
+        ax.hist(energy[mask], bins=range(0, 4096, 10), histtype="step", label=det_label(det))
     if len(unique_dets) > 1:
         ax.legend()
     ax.set_xlabel("Energy (raw)")
@@ -225,7 +246,7 @@ def plot_results(csv_path, prefix):
             mask = det_ids == det
             counts, _ = np.histogram(times_ms[mask], bins=bin_edges)
             bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
-            ax.plot(bin_centers, counts, marker=".", linestyle="-", label=f"Det {det}", markersize=3)
+            ax.plot(bin_centers, counts, marker=".", linestyle="-", label=det_label(det), markersize=3)
         if len(unique_dets) > 1:
             ax.legend()
         ax.set_xlabel("Time (ms)")
@@ -287,15 +308,15 @@ def main():
         if pixel_dis_csv:
             print(f"WARNING: pixel_dis_csv '{pixel_dis_csv}' not found, all pixels enabled")
 
-    # Build prefix: timestamp_t/e_params_thresholdkeV
+    # Build base_prefix (det IDs added later after running test.py)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     if run_type == "time":
-        prefix = f"{timestamp}_{type_short}_{run_param}s_{threshold}keV"
+        base_prefix = f"{timestamp}_{type_short}_{run_param}s_{threshold}keV"
     else:
-        prefix = f"{timestamp}_{type_short}_{run_param}_{threshold}keV"
+        base_prefix = f"{timestamp}_{type_short}_{run_param}_{threshold}keV"
 
-    # Output folder is the prefix
-    local_dest = os.path.join(local_output_dir, prefix)
+    # Output folder uses base_prefix initially (renamed after we get det IDs)
+    local_dest = os.path.join(local_output_dir, base_prefix)
 
     # Build the YAML that test.py will see (uses "number" internally)
     pynq_cfg = {
@@ -305,7 +326,7 @@ def main():
         "pixel_dis_csv": "pixel_disable.csv" if pixel_dis_csv else "",
         "clock": cfg["clock"],
         "threshold": threshold,
-        "output": prefix,
+        "output": base_prefix,
     }
 
     # Write temp YAML for upload
@@ -339,8 +360,8 @@ def main():
         if not success:
             sys.exit(1)
 
-        # Get CSV
-        csv_files = get_csv(client, prefix, local_dest, password, pynq_path)
+        # Get CSV (remote folder uses base_prefix)
+        csv_files = get_csv(client, base_prefix, local_dest, password, pynq_path)
     finally:
         client.close()
         for tmp in [tmp_yaml, tmp_pix_csv]:
@@ -348,15 +369,27 @@ def main():
                 os.remove(tmp)
         print("SSH disconnected.")
 
-    # Write output.txt
+    # Extract det IDs from stdout
+    reply = parse_reply_commands(test_stdout)
+    det0_id = str(reply.get("READ_SERIAL_LSB", ("?",))[0])
+    det1_id = str(reply.get("READ_SERIAL_LSB", (None, "?"))[1])
+
+    # Extend prefix with det IDs for local filenames
+    prefix = base_prefix
+    det_id_map = {0: det0_id, 1: det1_id}
+
+    # local_dest stays as base_prefix
     os.makedirs(local_dest, exist_ok=True)
+
+    # Write output.txt
+    run_dt = datetime.now()
     output_txt = os.path.join(local_dest, f"{prefix}_output.txt")
-    write_output_txt(output_txt, cfg, prefix, test_stdout, det0_dis, det1_dis)
+    write_output_txt(output_txt, cfg, run_dt, test_stdout, det0_dis, det1_dis, det0_id, det1_id)
     print(f"Saved {os.path.basename(output_txt)}")
 
     if csv_files:
         for csv_path in csv_files:
-            plot_results(csv_path, prefix)
+            plot_results(csv_path, prefix, det_id_map)
     else:
         print("No CSV to plot.")
 
