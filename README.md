@@ -1,8 +1,8 @@
-## PYNQ CZT Runner — Running Guide
+## PYNQ Remote Acquisition Usage Guide
 
 ### Setup
 
-#### Please first go through setup.pdf in the same directory before looking at the rest of this document.
+#### Please go through setup.pdf before performing the steps in this document.
 
 ### On the PC
 
@@ -29,7 +29,7 @@ This path must necessarily contain the following files:
 1. `overlays/test_2det_commanding.bit` (`overlays` is a directory containing the bitstream)
 2. `test.py`
 
-## Running the Script
+### Running the Script
 
 Once this is configured, the script can be run as follows (bash):
 
@@ -50,7 +50,9 @@ The second argument (`--output_dir`) can be omitted and the script will create t
 python pynq_run.py --input test.yaml
 ```
 
-## `.yaml` Configuration Parameters
+Please note that both of these files (input and output_dir) can have any arbitrary path. We use the same folder in the demo only for convenience.
+
+### `.yaml` Configuration Parameters
 
 Note that the `.yaml` file is a plaintext file that can be created and edited in any editor.
 
@@ -84,3 +86,12 @@ threshold_keV: 30
 This implies the following:
 
 PYNQ IP is configured as `192.168.2.99`, PYNQ user is `xilinx`, with `test.py` and the `overlays` directory stored within the `cubesat` directory. In this setup, both detectors 0 and 1 are used in time-based acquisition for 0.1 s, with a threshold of 30 keV. The path of the CSV implies that `pixel_disable.csv` is contained in the same working folder as `pynq_run.py`.
+
+### Output
+
+All data products will be generated in your selected output directory. They will be contained inside a folder labelled as `{timestamp}_{type}_{number}_{threshold}keV`. This folder will contain:
+
+- **DPH** — Up to 2 Detector Plane Histograms, labelled with detector ID, if both detectors produced events or were used.
+- **Light curve** — Event counts binned over time, 10ms time bins are used.
+- **Spectrum** — Energy spectrum histogram.
+- **`output.txt`** — Input parameters, runtime data, and disabled pixels.
